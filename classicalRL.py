@@ -1,4 +1,3 @@
-# %load quantumRL/quantumRL.py
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -7,36 +6,35 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
 import matplotlib.pyplot as plt
-import time
+import time  # Import the time module directly
 
 # --------------------------------
-# Part 1: Quantum Environment
+# Part 1: Classical Environment
 # --------------------------------
-class QuantumSingleQubitEnv(gym.Env):
+class ClassicalStateEnv(gym.Env):
     """
-    Quantum Reinforcement Learning Environment with a single qubit.
-    The agent's goal is to maximize the probability of measuring |1⟩.
-    Includes realistic NISQ device simulation with noise models, measurement collapse,
-    task-specific rewards, and parametric gates.
+    Classical Reinforcement Learning Environment with a binary state vector.
+    The agent's goal is to maximize the probability of the target state.
+    Includes realistic noise models and task-specific rewards.
     """
     def __init__(self, max_steps=10, noise_level=0.05, reward_type='measurement'):
         super().__init__()
         
-        # Define action space: continuous parameters for rotation angles
-        # [gate_type, theta, phi]
-        # gate_type: 0=RX, 1=RY, 2=RZ, 3=H, 4=I
+        # Define action space: discrete operations on state vector
+        # [operation_type, intensity]
+        # operation_type: 0=Shift, 1=Scale, 2=Rotate, 3=Flip, 4=Identity
         self.action_space = spaces.Dict({
-            'gate_type': spaces.Discrete(5),
-            'theta': spaces.Box(low=0, high=2*np.pi, shape=(1,), dtype=np.float32)
+            'operation_type': spaces.Discrete(5),
+            'intensity': spaces.Box(low=0, high=1, shape=(1,), dtype=np.float32)
         })
         
-        # Observation space: Measurement outcomes (after collapse)
-        # [prob_0, prob_1, last_measurement]
+        # Observation space: State vector and last measurement
+        # [state_0, state_1, last_measurement]
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(3,), dtype=np.float32)
         
-        # Quantum state initialization
-        self.state = np.array([1.0, 0.0], dtype=np.complex64)  # |0⟩ state
-        self.target_state = np.array([0.0, 1.0], dtype=np.complex64)  # |1⟩ state (default target)
+        # State initialization (probability distribution)
+        self.state = np.array([1.0, 0.0], dtype=np.float32)  # Initial state
+        self.target_state = np.array([0.0, 1.0], dtype=np.float32)  # Target state
         
         # Noise model parameters
         self.noise_level = noise_level
@@ -47,76 +45,79 @@ class QuantumSingleQubitEnv(gym.Env):
         self.current_step = 0
         self.last_measurement = 0  # Store last measurement outcome
         
-    def apply_gate(self, gate_type, theta=0):
-        """Apply parameterized quantum gate"""
-        if gate_type == 0:  # RX gate
-            gate = np.array([
-                [np.cos(theta/2), -1j*np.sin(theta/2)],
-                [-1j*np.sin(theta/2), np.cos(theta/2)]
-            ], dtype=np.complex64)
-        elif gate_type == 1:  # RY gate
-            gate = np.array([
-                [np.cos(theta/2), -np.sin(theta/2)],
-                [np.sin(theta/2), np.cos(theta/2)]
-            ], dtype=np.complex64)
-        elif gate_type == 2:  # RZ gate
-            gate = np.array([
-                [np.exp(-1j*theta/2), 0],
-                [0, np.exp(1j*theta/2)]
-            ], dtype=np.complex64)
-        elif gate_type == 3:  # Hadamard
-            gate = np.array([
-                [1/np.sqrt(2), 1/np.sqrt(2)],
-                [1/np.sqrt(2), -1/np.sqrt(2)]
-            ], dtype=np.complex64)
-        else:  # Identity
-            gate = np.eye(2, dtype=np.complex64)
+    def apply_operation(self, operation_type, intensity):
+        """Apply parameterized operation to the state vector"""
+        # Ensure state is normalized
+        self.state = self.state / np.sum(self.state)
+        
+        if operation_type == 0:  # Shift operation
+            # Shift probability mass
+            delta = intensity * self.state[0]
+            self.state[0] -= delta
+            self.state[1] += delta
             
-        return gate
+        elif operation_type == 1:  # Scale operation
+            # Scale relative probabilities
+            factor = 1.0 + intensity
+            self.state[1] *= factor
+            
+        elif operation_type == 2:  # Rotate operation
+            # Rotate probabilities (similar to quantum rotation)
+            theta = intensity * np.pi
+            new_state = np.zeros_like(self.state)
+            new_state[0] = self.state[0] * np.cos(theta) - self.state[1] * np.sin(theta)
+            new_state[1] = self.state[0] * np.sin(theta) + self.state[1] * np.cos(theta)
+            # Ensure non-negative by taking absolute values
+            new_state = np.abs(new_state)
+            self.state = new_state
+            
+        elif operation_type == 3:  # Flip operation
+            # Flip the state probabilities
+            self.state = np.flip(self.state)
+            
+        else:  # Identity operation
+            # Do nothing
+            pass
+            
+        # Ensure state remains a valid probability distribution
+        self.state = np.clip(self.state, 0.0, 1.0)
+        sum_state = np.sum(self.state)
+        if sum_state == 0.0:
+            self.state = np.array([0.5, 0.5], dtype=np.float32)
+        else:
+            self.state = self.state / sum_state
     
     def apply_noise(self):
-        """Apply depolarizing and amplitude damping noise"""
-        # Depolarizing noise: mix with maximally mixed state
+        """Apply noise to the state vector"""
+        # Random fluctuation
         if np.random.random() < self.noise_level:
-            # Apply bit flip (X) with some probability
-            self.state = np.dot(np.array([[0, 1], [1, 0]], dtype=np.complex64), self.state)
+            # Apply random flip with some probability
+            self.state = np.flip(self.state)
         
-        # Amplitude damping (T1 decay)
-        gamma = self.noise_level  # Damping parameter
-        if np.random.random() < gamma * np.abs(self.state[1])**2:
-            # Collapse to |0⟩ with probability proportional to |1⟩ population
-            self.state = np.array([1.0, 0.0], dtype=np.complex64)
-
-        """Apply depolarizing and amplitude damping noise"""
+        # Random drift noise
+        drift = self.noise_level * np.random.uniform(-0.1, 0.1)
+        if self.state[0] + drift > 0 and self.state[1] - drift > 0:
+            self.state[0] += drift
+            self.state[1] -= drift
+        
         # Ensure state remains valid
-        self.state = self.state / np.linalg.norm(self.state)
-        
-        # Phase damping (T2 dephasing)
-        if np.random.random() < self.noise_level:
-            # Random phase rotation
-            phase = np.random.uniform(0, 2*np.pi)
-            phase_matrix = np.array([[1, 0], [0, np.exp(1j*phase)]], dtype=np.complex64)
-            self.state = np.dot(phase_matrix, self.state)
-        
-        # Normalize state
-        self.state = self.state / np.linalg.norm(self.state)
+        self.state = np.clip(self.state, 0.0, 1.0)
+        sum_state = np.sum(self.state)
+        if sum_state == 0.0:
+            self.state = np.array([0.5, 0.5], dtype=np.float32)
+        else:
+            self.state = self.state / sum_state
     
     def perform_measurement(self):
         """Perform a measurement and collapse the state"""
-        prob_1 = np.clip(np.abs(self.state[1])**2, 0.0, 1.0)  # Ensure valid probability
-        prob_0 = 1.0 - prob_1
-        
-        # Normalize probabilities to sum exactly to 1
-        probabilities = np.array([prob_0, prob_1])
-        probabilities /= probabilities.sum()
-        
-        outcome = np.random.choice([0, 1], p=probabilities)
+        # Sample from the probability distribution
+        outcome = np.random.choice([0, 1], p=self.state)
         
         # Collapse state based on measurement
         if outcome == 0:
-            self.state = np.array([1.0, 0.0], dtype=np.complex64)
+            self.state = np.array([1.0, 0.0], dtype=np.float32)
         else:
-            self.state = np.array([0.0, 1.0], dtype=np.complex64)
+            self.state = np.array([0.0, 1.0], dtype=np.float32)
             
         self.last_measurement = outcome
         return outcome
@@ -124,23 +125,21 @@ class QuantumSingleQubitEnv(gym.Env):
     def calculate_reward(self):
         """Calculate reward based on the specified reward type"""
         if self.reward_type == 'measurement':
-            # Reward based on measuring |1⟩
+            # Reward based on measuring the target state
             return float(self.last_measurement)
         
         elif self.reward_type == 'fidelity':
             # Reward based on state preparation fidelity with target state
-            fidelity = np.abs(np.vdot(self.state, self.target_state))**2
+            # In classical version, this is dot product of probability distributions
+            fidelity = np.sum(np.sqrt(self.state * self.target_state))**2
             return float(fidelity)
         
         elif self.reward_type == 'entropy':
             # Reward based on reducing entropy (maximizing purity)
-            prob_0 = np.abs(self.state[0])**2
-            prob_1 = np.abs(self.state[1])**2
             entropy = 0
-            if prob_0 > 0:
-                entropy -= prob_0 * np.log2(prob_0)
-            if prob_1 > 0:
-                entropy -= prob_1 * np.log2(prob_1)
+            for p in self.state:
+                if p > 0:
+                    entropy -= p * np.log2(p)
             return 1.0 - entropy  # Max reward is 1 (pure state), min is 0 (mixed)
         
         else:
@@ -150,8 +149,8 @@ class QuantumSingleQubitEnv(gym.Env):
         if seed is not None:
             np.random.seed(seed)
             
-        # Reset to |0⟩ state
-        self.state = np.array([1.0, 0.0], dtype=np.complex64)
+        # Reset to initial state
+        self.state = np.array([1.0, 0.0], dtype=np.float32)
         self.current_step = 0
         self.last_measurement = 0
         
@@ -163,21 +162,17 @@ class QuantumSingleQubitEnv(gym.Env):
     
     def _get_observation(self):
         """Return the current observation"""
-        prob_0 = np.abs(self.state[0])**2
-        prob_1 = np.abs(self.state[1])**2
-        
-        # Return probability distribution and last measurement outcome
-        return np.array([prob_0, prob_1, self.last_measurement], dtype=np.float32)
+        # Return state vector and last measurement outcome
+        return np.array([self.state[0], self.state[1], self.last_measurement], dtype=np.float32)
     
     def step(self, action):
         """Execute one step in the environment"""
         # Parse action
-        gate_type = action['gate_type']
-        theta = float(action['theta'])
+        operation_type = action['operation_type']
+        intensity = action['intensity'].item()  # Use .item() instead of float()
         
-        # Apply quantum gate
-        gate = self.apply_gate(gate_type, theta)
-        self.state = np.dot(gate, self.state)
+        # Apply operation
+        self.apply_operation(operation_type, intensity)
         
         # Apply noise model
         self.apply_noise()
@@ -198,32 +193,28 @@ class QuantumSingleQubitEnv(gym.Env):
         return self._get_observation(), reward, terminated, False, {}
     
     def render(self):
-        """Display quantum state information"""
-        prob_0 = np.abs(self.state[0])**2
-        prob_1 = np.abs(self.state[1])**2
-        
+        """Display state information"""
         print(f"Step: {self.current_step}")
         print(f"State: [{self.state[0]:.4f}, {self.state[1]:.4f}]")
-        print(f"Probabilities: |0⟩: {prob_0:.4f}, |1⟩: {prob_1:.4f}")
         print(f"Last measurement: {self.last_measurement}")
         
     def close(self):
         pass
 
 # Register environment
-gym.register(id='QuantumSingleQubit-v1', entry_point=QuantumSingleQubitEnv)
+gym.register(id='ClassicalState-v1', entry_point=ClassicalStateEnv)
 
 # --------------------------------
 # Part 2: Policy Gradient Algorithm
 # --------------------------------
-class QuantumPolicyNetwork(nn.Module):
+class ClassicalPolicyNetwork(nn.Module):
     """
-    Neural network for quantum gate policy.
-    Input: quantum state observation
-    Output: probability distribution over gates and parameters
+    Neural network for classical state manipulation policy.
+    Input: state observation
+    Output: probability distribution over operations and parameters
     """
-    def __init__(self, obs_dim, num_gates, hidden_dim=64):
-        super(QuantumPolicyNetwork, self).__init__()
+    def __init__(self, obs_dim, num_operations, hidden_dim=64):
+        super(ClassicalPolicyNetwork, self).__init__()
         
         # Common feature extractor
         self.feature_network = nn.Sequential(
@@ -233,66 +224,66 @@ class QuantumPolicyNetwork(nn.Module):
             nn.ReLU()
         )
         
-        # Gate type head (discrete)
-        self.gate_head = nn.Sequential(
-            nn.Linear(hidden_dim, num_gates),
+        # Operation type head (discrete)
+        self.operation_head = nn.Sequential(
+            nn.Linear(hidden_dim, num_operations),
             nn.Softmax(dim=-1)
         )
         
-        # Theta parameter head (continuous)
-        self.theta_mean = nn.Linear(hidden_dim, 1)
-        self.theta_std = nn.Parameter(torch.tensor([0.5]))
+        # Intensity parameter head (continuous)
+        self.intensity_mean = nn.Linear(hidden_dim, 1)
+        self.intensity_std = nn.Parameter(torch.tensor([0.1]))
         
     def forward(self, x):
         features = self.feature_network(x)
         
-        # Gate probabilities
-        gate_probs = self.gate_head(features)
+        # Operation probabilities
+        operation_probs = self.operation_head(features)
         
-        # Theta parameter (mean and std for Gaussian policy)
-        theta_mean = self.theta_mean(features)
-        theta_std = torch.exp(self.theta_std).expand_as(theta_mean)
+        # Intensity parameter (mean and std for Gaussian policy)
+        intensity_mean = torch.sigmoid(self.intensity_mean(features))  # Range [0,1]
+        intensity_std = torch.exp(self.intensity_std).expand_as(intensity_mean)
         
-        return gate_probs, theta_mean, theta_std
+        return operation_probs, intensity_mean, intensity_std
     
     def sample_action(self, obs):
         """Sample an action from the policy"""
         obs_tensor = torch.FloatTensor(obs)
-        gate_probs, theta_mean, theta_std = self.forward(obs_tensor)
+        operation_probs, intensity_mean, intensity_std = self.forward(obs_tensor)
         
-        # Sample gate type
-        gate_distribution = Categorical(gate_probs)
-        gate_type = gate_distribution.sample().item()
+        # Sample operation type
+        operation_distribution = Categorical(operation_probs)
+        operation_type = operation_distribution.sample().item()
         
-        # Sample theta parameter
-        theta = torch.normal(theta_mean, theta_std).item()
-        # Ensure theta is within [0, 2π]
-        theta = theta % (2 * np.pi)
+        # Sample intensity parameter (clipped to [0,1])
+        intensity = torch.clamp(torch.normal(intensity_mean, intensity_std), 0.0, 1.0).item()
         
         # Calculate log probability for the action
-        gate_log_prob = gate_distribution.log_prob(torch.tensor(gate_type))
-        theta_log_prob = -0.5 * (((torch.tensor(theta) - theta_mean) / theta_std) ** 2) - \
-                         torch.log(theta_std) - 0.5 * np.log(2 * np.pi)
+        operation_log_prob = operation_distribution.log_prob(torch.tensor(operation_type))
         
-        total_log_prob = gate_log_prob + theta_log_prob.squeeze()
+        # Normal PDF for continuous intensity (scaled for clipping)
+        intensity_log_prob = -0.5 * (((torch.tensor(intensity) - intensity_mean) / intensity_std) ** 2) - \
+                             torch.log(intensity_std) - 0.5 * np.log(2 * np.pi)
+        
+        total_log_prob = operation_log_prob + intensity_log_prob.squeeze()
         
         return {
-            'gate_type': gate_type,
-            'theta': np.array([theta], dtype=np.float32)
+            'operation_type': operation_type,
+            'intensity': np.array([intensity], dtype=np.float32)
         }, total_log_prob
     
 
-class QuantumPolicyGradient:
+class ClassicalPolicyGradient:
     """
-    Policy Gradient algorithm for quantum control tasks
+    Policy Gradient algorithm for classical state manipulation tasks
     """
     def __init__(self, env, hidden_dim=64, lr=0.001, gamma=0.99):
         self.env = env
         self.obs_dim = env.observation_space.shape[0]
-        self.num_gates = env.action_space['gate_type'].n
+        self.num_operations = env.action_space['operation_type'].n
         
         # Policy network
-        self.policy = QuantumPolicyNetwork(self.obs_dim, self.num_gates, hidden_dim)
+        self.policy = ClassicalPolicyNetwork(self.obs_dim, self.num_operations, hidden_dim)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
         
         # Hyperparameters
@@ -301,7 +292,7 @@ class QuantumPolicyGradient:
         # Training metrics
         self.episode_rewards = []
         self.avg_rewards = []
-
+        
     def compute_returns(self, rewards):
         """Compute discounted returns"""
         returns = []
@@ -313,15 +304,37 @@ class QuantumPolicyGradient:
             
         # Normalize returns
         returns = torch.tensor(returns)
-        if len(returns) > 1:  # Only normalize if we have more than one return
+        if len(returns) > 1:
             returns = (returns - returns.mean()) / (returns.std() + 1e-8)
         
         return returns
+    
+    def update_policy(self, log_probs, rewards):
+        """Update policy using policy gradient"""
+        returns = self.compute_returns(rewards)
         
-
+        # Calculate loss - fix tensor dimensions
+        policy_loss = []
+        for log_prob, R in zip(log_probs, returns):
+            # Ensure log_prob is a proper tensor
+            if not isinstance(log_prob, torch.Tensor):
+                log_prob = torch.tensor(log_prob)
+            
+            # Create proper loss tensor
+            policy_loss.append(-log_prob * R)
+        
+        if policy_loss:
+            # Stack scalars into 1D tensor
+            policy_loss = torch.stack(policy_loss).sum()
+            
+            # Perform backpropagation
+            self.optimizer.zero_grad()
+            policy_loss.backward()
+            self.optimizer.step()
+            
     def train(self, num_episodes=500, max_steps=50, print_interval=10):
-        """Train the agent with time measurement"""
-        start_time = time.perf_counter()
+        """Train the agent"""
+        start_time = time.perf_counter()  # Fixed - use Python's time module
         
         for episode in range(num_episodes):
             obs, _ = self.env.reset()
@@ -367,34 +380,10 @@ class QuantumPolicyGradient:
             if (episode + 1) % print_interval == 0:
                 print(f"Episode {episode+1}/{num_episodes}, Avg Reward: {self.avg_rewards[-1]:.4f}")
         
-        end_time = time.perf_counter()
+        end_time = time.perf_counter()  # Fixed - use Python's time module
         total_time = end_time - start_time
         print(f"Training completed in {total_time:.2f} seconds")
         return total_time
-
-
-    def update_policy(self, log_probs, rewards):
-        """Update policy using policy gradient"""
-        returns = self.compute_returns(rewards)
-        
-        # Calculate loss - fix tensor dimensions
-        policy_loss = []
-        for log_prob, R in zip(log_probs, returns):
-            # Ensure log_prob is a proper tensor
-            if not isinstance(log_prob, torch.Tensor):
-                log_prob = torch.tensor(log_prob)
-            
-            # Create proper loss tensor
-            policy_loss.append(-log_prob * R)
-        
-        if policy_loss:
-            # Stack scalars into 1D tensor
-            policy_loss = torch.stack(policy_loss).sum()
-            
-            # Perform backpropagation
-            self.optimizer.zero_grad()
-            policy_loss.backward()
-            self.optimizer.step()
     
     def plot_performance(self):
         """Plot training performance"""
@@ -403,10 +392,10 @@ class QuantumPolicyGradient:
         plt.plot(self.avg_rewards, label='Avg Reward (100 episodes)')
         plt.xlabel('Episode')
         plt.ylabel('Reward')
-        plt.title('Quantum Policy Gradient Training Progress')
+        plt.title('Classical Policy Gradient Training Progress')
         plt.legend()
         plt.grid()
-        plt.savefig('training_progress.png', dpi=600, bbox_inches='tight')
+        plt.savefig('classical_training_progress.png', dpi=600, bbox_inches='tight')
         plt.show()
     
     def evaluate(self, num_episodes=20):
@@ -430,9 +419,9 @@ class QuantumPolicyGradient:
                 done = terminated or truncated
                 
                 # Print step information
-                gate_names = ["RX", "RY", "RZ", "H", "I"]
-                gate_name = gate_names[action['gate_type']]
-                print(f"  Step {step+1}: Gate={gate_name}({action['theta'][0]:.2f}), Reward={reward:.4f}")
+                operation_names = ["Shift", "Scale", "Rotate", "Flip", "Identity"]
+                operation_name = operation_names[action['operation_type']]
+                print(f"  Step {step+1}: Operation={operation_name}({action['intensity'][0]:.2f}), Reward={reward:.4f}")
                 
                 # Update metrics
                 episode_reward += reward
@@ -448,27 +437,27 @@ class QuantumPolicyGradient:
         print(f"\nAverage Evaluation Reward: {np.mean(eval_rewards):.4f}")
         return np.mean(eval_rewards)
     
-    def execute_quantum_circuit(self, render=True):
-        """Execute a full quantum circuit using the learned policy"""
+    def execute_sequence(self, render=True):
+        """Execute a full sequence using the learned policy"""
         obs, _ = self.env.reset()
         done = False
         step = 0
-        circuit = []
+        sequence = []
         
-        print("\nExecuting Quantum Circuit with Learned Policy:")
+        print("\nExecuting Optimal Sequence with Learned Policy:")
         
-        while not done and step < 10:  # Limit to 10 gates for readability
+        while not done and step < 10:  # Limit to 10 operations for readability
             # Sample action from policy
             with torch.no_grad():
                 action, _ = self.policy.sample_action(obs)
             
-            # Map gate type to name
-            gate_names = ["RX", "RY", "RZ", "H", "I"]
-            gate_name = gate_names[action['gate_type']]
-            theta = action['theta'][0]
+            # Map operation type to name
+            operation_names = ["Shift", "Scale", "Rotate", "Flip", "Identity"]
+            operation_name = operation_names[action['operation_type']]
+            intensity = action['intensity'][0]
             
-            # Add to circuit
-            circuit.append((gate_name, theta))
+            # Add to sequence
+            sequence.append((operation_name, intensity))
             
             # Execute action
             next_obs, reward, terminated, truncated, _ = self.env.step(action)
@@ -476,33 +465,30 @@ class QuantumPolicyGradient:
             
             # Print step information
             if render:
-                print(f"Gate {step+1}: {gate_name}({theta:.2f})")
+                print(f"Operation {step+1}: {operation_name}({intensity:.2f})")
                 self.env.render()
             
             # Move to next state
             obs = next_obs
             step += 1
         
-        # Print final state and circuit
-        print("\nFinal Circuit:")
-        for i, (gate, param) in enumerate(circuit):
-            if gate in ["RX", "RY", "RZ"]:
-                print(f"{i+1}. {gate}({param:.2f})")
-            else:
-                print(f"{i+1}. {gate}")
+        # Print final state and sequence
+        print("\nFinal Sequence:")
+        for i, (operation, param) in enumerate(sequence):
+            print(f"{i+1}. {operation}({param:.2f})")
         
-        return circuit
+        return sequence
 
 # --------------------------------
 # Part 3: Main execution
 # --------------------------------
 def main():
-    """Main function to run the quantum RL experiment"""
+    """Main function to run the classical RL experiment"""
     # Create environment
-    env = gym.make('QuantumSingleQubit-v1', noise_level=0.03, reward_type='fidelity')
+    env = gym.make('ClassicalState-v1', noise_level=0.03, reward_type='fidelity')
     
     # Create and train agent
-    agent = QuantumPolicyGradient(env, hidden_dim=64, lr=0.002, gamma=0.99)
+    agent = ClassicalPolicyGradient(env, hidden_dim=64, lr=0.002, gamma=0.99)
     
     print("Starting training...")
     training_time = agent.train(num_episodes=500, print_interval=25)
@@ -513,8 +499,8 @@ def main():
     print("Evaluating policy...")
     agent.evaluate(num_episodes=3)
     
-    print("Executing optimal quantum circuit...")
-    agent.execute_quantum_circuit()
+    print("Executing optimal sequence...")
+    agent.execute_sequence()
 
 if __name__ == "__main__":
     main()
