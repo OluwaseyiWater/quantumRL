@@ -1,3 +1,4 @@
+# %load quantumRL/classicalRL.py
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -292,6 +293,9 @@ class ClassicalPolicyGradient:
         # Training metrics
         self.episode_rewards = []
         self.avg_rewards = []
+        self.episode_lengths = []
+        self.actions_history = []
+        self.intensity_history   = []
         
     def compute_returns(self, rewards):
         """Compute discounted returns"""
@@ -342,11 +346,19 @@ class ClassicalPolicyGradient:
             log_probs = []
             rewards = []
             episode_reward = 0
+            length = 0
+            first_step = True
             
             # Collect trajectory
             for step in range(max_steps):
                 # Sample action from policy
                 action, log_prob = self.policy.sample_action(obs)
+                self.actions_history.append(action['operation_type'])
+                length += 1
+                if first_step:
+                    # record the intensity value (scalar)
+                    self.intensity_history.append(action['intensity'][0])
+                    first_step = False
                 
                 # Execute action
                 next_obs, reward, terminated, truncated, _ = self.env.step(action)
@@ -368,6 +380,7 @@ class ClassicalPolicyGradient:
             
             # Record metrics
             self.episode_rewards.append(episode_reward)
+            self.episode_lengths.append(length)
             
             # Calculate moving average
             if len(self.episode_rewards) >= 100:
@@ -397,6 +410,49 @@ class ClassicalPolicyGradient:
         plt.grid()
         plt.savefig('classical_training_progress.png', dpi=600, bbox_inches='tight')
         plt.show()
+
+
+            # ---- Episode Length Over Training ----
+        plt.figure(figsize=(8,4))
+        plt.plot(self.episode_lengths, alpha=0.3, label='Steps per Episode')
+        plt.plot(
+            np.convolve(self.episode_lengths, np.ones(50)/50, mode='valid'),
+            label='Moving Avg (50 eps)',
+        )
+        plt.xlabel('Episode')
+        plt.ylabel('Steps')
+        plt.title('Episode Length Over Training')
+        plt.legend()
+        plt.grid()
+        plt.savefig('fig_classical_episode_length.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+            # ---- Action Selection Frequency ----
+        from collections import Counter
+        ctr = Counter(self.actions_history)
+        acts, cnts = zip(*sorted(ctr.items()))
+        labels = ["Shift","Scale","Rotate","Flip","Identity"]
+        plt.figure(figsize=(6,3))
+        plt.bar(acts, cnts, tick_label=labels)
+        plt.xlabel('Operation Type')
+        plt.ylabel('Total Selections')
+        plt.title('Action Selection Frequency')
+        plt.grid(axis='y')
+        plt.savefig('fig_classical_action_freq.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+            # ---- Parameter Convergence: First Intensity ----
+        plt.figure(figsize=(8,4))
+        plt.plot(self.intensity_history, alpha=0.5)
+        plt.xlabel('Episode')
+        plt.ylabel('First Intensity Value')
+        plt.title('Convergence of First-Step Intensity Parameter')
+        plt.grid()
+        plt.savefig('fig_classical_intensity_convergence.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+
+
     
     def evaluate(self, num_episodes=20):
         """Evaluate the trained policy"""
@@ -501,6 +557,26 @@ def main():
     
     print("Executing optimal sequence...")
     agent.execute_sequence()
+    return agent
 
 if __name__ == "__main__":
-    main()
+    agent = main()
+
+        # ---- Fidelity vs. Noise Level (Classical) ----
+    import gymnasium as gym
+    noise_levels = [0.00, 0.05, 0.10, 0.15, 0.20]
+    fidelities = []
+    for eps in noise_levels:
+        # swap in an env with higher noise
+        env = gym.make('ClassicalState-v1', noise_level=eps, reward_type='fidelity')
+        agent.env = env
+        fidelities.append(agent.evaluate(num_episodes=50))
+
+    plt.figure(figsize=(6,4))
+    plt.plot(noise_levels, fidelities, marker='o')
+    plt.xlabel('Noise Level')
+    plt.ylabel('Avg. Fidelity')
+    plt.title('Final Fidelity vs. Environment Noise (Classical Env)')
+    plt.grid()
+    plt.savefig('fig_classical_fidelity_noise.png', dpi=300, bbox_inches='tight')
+    plt.show()
