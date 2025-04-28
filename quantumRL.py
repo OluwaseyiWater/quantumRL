@@ -1,4 +1,5 @@
 # %load quantumRL/quantumRL.py
+
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -301,6 +302,9 @@ class QuantumPolicyGradient:
         # Training metrics
         self.episode_rewards = []
         self.avg_rewards = []
+        self.episode_lengths = []
+        self.actions_history = []
+        self.theta_history   = []
 
     def compute_returns(self, rewards):
         """Compute discounted returns"""
@@ -329,11 +333,18 @@ class QuantumPolicyGradient:
             log_probs = []
             rewards = []
             episode_reward = 0
+            length = 0
+            first_step = True
             
             # Collect trajectory
             for step in range(max_steps):
                 # Sample action from policy
                 action, log_prob = self.policy.sample_action(obs)
+                self.actions_history.append(action['gate_type'])
+                length += 1
+                if first_step:
+                    self.theta_history.append(action['theta'][0])
+                    first_step = False
                 
                 # Execute action
                 next_obs, reward, terminated, truncated, _ = self.env.step(action)
@@ -355,6 +366,7 @@ class QuantumPolicyGradient:
             
             # Record metrics
             self.episode_rewards.append(episode_reward)
+            self.episode_lengths.append(length)
             
             # Calculate moving average
             if len(self.episode_rewards) >= 100:
@@ -408,6 +420,36 @@ class QuantumPolicyGradient:
         plt.grid()
         plt.savefig('training_progress.png', dpi=600, bbox_inches='tight')
         plt.show()
+
+    # --- after training and collecting agent.episode_lengths ---
+        plt.figure(figsize=(8,4))
+        plt.plot(self.episode_lengths, alpha=0.3, label='Steps per Episode')
+        plt.plot(
+            np.convolve(self.episode_lengths, np.ones(50)/50, mode='valid'),
+            label='Moving Avg (50 eps)',
+        )
+        plt.xlabel('Episode')
+        plt.ylabel('Steps')
+        plt.title('Episode Length Over Training')
+        plt.legend()
+        plt.grid()
+        plt.savefig('fig_episode_length.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+        # ---- NEW: Action Selection Frequency ----
+        from collections import Counter
+        ctr = Counter(self.actions_history)
+        acts, cnts = zip(*sorted(ctr.items()))
+        labels = ["Rx","Ry","Rz","H","I"]
+        plt.figure(figsize=(6,3))
+        plt.bar(acts, cnts, tick_label=labels)
+        plt.xlabel('Gate Type'); plt.ylabel('Selections')
+        plt.title('Action Selection Frequency')
+        plt.grid(axis='y')
+        plt.savefig('fig_action_freq.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+
     
     def evaluate(self, num_episodes=20):
         """Evaluate the trained policy"""
@@ -515,6 +557,35 @@ def main():
     
     print("Executing optimal quantum circuit...")
     agent.execute_quantum_circuit()
+    return agent
 
 if __name__ == "__main__":
-    main()
+    agent = main()
+
+    import gymnasium as gym
+    noise_levels = [0.00, 0.05, 0.10, 0.15, 0.20]
+    fidelities = []
+    for eps in noise_levels:
+        # swap in a fresh env with higher noise
+        env = gym.make('QuantumSingleQubit-v1', noise_level=eps, reward_type='fidelity')
+        agent.env = env
+        fidelities.append(agent.evaluate(num_episodes=50))
+
+    plt.figure(figsize=(6,4))
+    plt.plot(noise_levels, fidelities, marker='o')
+    plt.xlabel('Noise Level')
+    plt.ylabel('Average Fidelity')
+    plt.title('Final Fidelity vs. Environment Noise')
+    plt.grid()
+    plt.savefig('fig_fidelity_noise.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+    # ---- NEW: Parameter Convergence ----
+    plt.figure(figsize=(8,4))
+    plt.plot(agent.theta_history, alpha=0.5)
+    plt.xlabel('Episode')
+    plt.ylabel('First Gate Angle (rad)')
+    plt.title('Convergence of First Rotation Parameter')
+    plt.grid()
+    plt.savefig('fig_theta_convergence.png', dpi=300, bbox_inches='tight')
+    plt.show()
