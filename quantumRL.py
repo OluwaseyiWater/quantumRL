@@ -200,11 +200,23 @@ class QuantumPolicyGradient:
         return np.array(self.episode_rewards)
 
     def plot_performance(self):
+        plt.rcParams['text.usetex']    = False
+        plt.rcParams['mathtext.fontset'] = 'stix'   
+        plt.rcParams['font.size']      = 14         
+        plt.rcParams['axes.labelsize'] = 16         
+        plt.rcParams['axes.titlesize'] = 18         
+        plt.rcParams['legend.fontsize'] = 14
+        plt.rcParams['xtick.labelsize'] = 12
+        plt.rcParams['ytick.labelsize'] = 12
+        
         plt.figure(figsize=(10,5))
-        plt.plot(self.episode_rewards,alpha=0.3,label='Episode Reward')
-        plt.plot(self.avg_rewards,label='Avg Reward')
-        plt.xlabel('Episode'); plt.ylabel('Reward'); plt.title('Quantum Training Progress')
-        plt.legend(); plt.grid(True)
+        plt.plot(self.episode_rewards,alpha=0.3,label=r'Episode Reward')
+        plt.plot(self.avg_rewards,label=r'Avg Reward')
+        plt.xlabel('Episode')
+        plt.ylabel('Reward')
+        plt.title('Quantum Training Progress')
+        plt.legend(loc='best')
+        plt.grid(True)
         plt.savefig('quantum_training_progress.png',dpi=600,bbox_inches='tight');
         plt.show()
 
