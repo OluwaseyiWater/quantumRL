@@ -17,7 +17,7 @@ seeds          = [42, 99, 123, 256, 512]
 all_results = {
     'CPG':   [],  # Classical REINFORCE
     'QNPG':  [],  # Quantum Natural PG
-    'QPPG':  [],  # Your proposed method
+    'QPPG':  [],  # Proposed method
     'Q-DQN': []   # Quantum DQN baseline
 }
 # ──────────────────────────────────────────────────────────────────────────────
@@ -55,13 +55,12 @@ for seed in seeds:
     ep_qdqn = qdqn.train(num_episodes=num_episodes)
     all_results['Q-DQN'].append(ep_qdqn)
 
+import scipy.io as sio
+
+fixed = { k.replace('-', '_'): v
+          for k, v in all_results.items() }
+
+sio.savemat('comparison4_fixed.mat', fixed)
+print("Saved comparison4_fixed.mat with keys:", fixed.keys())
 # ──────────────────────────────────────────────────────────────────────────────
-# Stack into arrays of shape (num_seeds, num_episodes)
-for key in all_results:
-    all_results[key] = np.vstack(all_results[key])
-
-# Save everything to a .mat for MATLAB plotting
-sio.savemat('comparison4.mat', all_results)
-
-print("Saved comparison4.mat with keys:", list(all_results.keys()))
 # ──────────────────────────────────────────────────────────────────────────────
